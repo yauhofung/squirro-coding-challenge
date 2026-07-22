@@ -57,6 +57,7 @@ class NYTimesSource(object):
         self.session: requests.Session | None = None
         self.inc_column: str | None = None
         self.max_inc_value: str | None = None
+        self._seen_keys: set[str] = set()
 
     def connect(
         self,
@@ -211,6 +212,7 @@ class NYTimesSource(object):
         batch: list[dict[str, Any]] = []
         for doc in self._iter_docs():
             flat = flatten_dict(doc)
+            self._seen_keys.update(flat)
             self._update_checkpoint(flat.get("pub_date"))
             batch.append(flat)
             if len(batch) == batch_size:
@@ -219,12 +221,25 @@ class NYTimesSource(object):
         if batch:
             yield batch
 
-    def getSchema(self):
+    def getSchema(self) -> list[str]:
         """
         Return the schema of the dataset
         :returns a List containing the names of the columns retrieved from the
         source
         """
+        if not self._seen_keys:
+            # Nothing loaded yet - derive the schema from a sample page.
+            try:
+                response = self._fetch_page(0)
+                for doc in response.get("docs") or []:
+                    self._seen_keys.update(flatten_dict(doc))
+            except Exception:
+                log.warning(
+                    "Could not derive a dynamic schema from the API, falling back to the static column list",
+                    exc_info=True,
+                )
+        if self._seen_keys:
+            return sorted(self._seen_keys)
 
         schema = [
             "title",
