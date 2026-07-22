@@ -1,0 +1,22 @@
+[tools]
+python = "3.12"  # main.py needs >= 3.10
+uv = "latest"
+
+[env]
+# NYTIMES_API_KEY lives in the gitignored .env (see README)
+_.file = ".env"
+# Auto-create (via uv) and activate the project virtualenv
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.install]
+description = "Install dependencies with uv"
+run = "uv pip install -r requirements.txt"
+
+[tasks.update]
+description = "Upgrade dependencies to the newest versions allowed by requirements.txt"
+run = "uv pip install --upgrade -r requirements.txt"
+
+[tasks.run]
+depends = ["install"]
+description = "Run the NYT article loader demo (needs NYTIMES_API_KEY)"
+run = "uv run main.py"

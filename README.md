@@ -26,6 +26,18 @@ and yields them in batches as flattened Python dictionaries
    Alternatively put `NYTIMES_API_KEY=your-key-here` into a `.env` file
    (already gitignored) and source it: `set -a; . ./.env; set +a`.
 
+### With mise (alternative)
+
+If you use [mise](https://mise.jdx.dev/), `mise.toml` handles all of the
+above — it pins Python/uv, creates the virtualenv, installs dependencies
+with [uv](https://docs.astral.sh/uv/), and auto-loads `.env`:
+
+```bash
+mise trust && mise install   # once: install pinned Python + uv
+mise run run                 # install deps (via uv) and run the demo
+mise run update              # upgrade deps to newest allowed versions
+```
+
 ## Run
 
 ```bash
