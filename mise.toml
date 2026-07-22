@@ -20,3 +20,12 @@ run = "uv pip install --upgrade -r requirements.txt"
 depends = ["install"]
 description = "Run the NYT article loader demo (needs NYTIMES_API_KEY)"
 run = "uv run main.py"
+
+[tasks.install-dev]
+description = "Install dev dependencies (pytest) with uv"
+run = "uv pip install -r requirements-dev.txt"
+
+[tasks.test]
+depends = ["install-dev"]
+description = "Run the test suite (offline, no API key needed)"
+run = "uv run pytest -q"

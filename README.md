@@ -40,6 +40,18 @@ mise run update  # upgrade deps to newest allowed versions
 The demo searches for “Silicon Valley”, prints three batches of 10 articles
 (`_id` + `headline.main`), then prints the dynamically derived schema.
 
+## Tests
+
+```bash
+mise run test    # install dev deps (pytest) and run the suite
+```
+
+The suite in `test_main.py` runs fully offline — `requests.Session` is
+replaced with a fake that replays canned API responses — and covers the
+flattener, timestamp parsing, retry/rate-limit handling, pagination (short
+page / `meta.hits` / page-cap stops), batching, incremental loading, and
+schema derivation, including an end-to-end incremental re-run.
+
 ## How it works
 
 - **`getDataBatch(batch_size)`** is a generator that transparently pages
