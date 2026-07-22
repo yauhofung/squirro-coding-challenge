@@ -1,5 +1,7 @@
 import argparse
+import itertools
 import logging
+import os
 import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -255,8 +257,11 @@ class NYTimesSource(object):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
     config = {
-        "api_key": "NYTIMES_API_KEY",
+        # Never hardcode credentials - the key is read from the environment.
+        "api_key": os.environ.get("NYTIMES_API_KEY", "NYTIMES_API_KEY"),
         "query": "Silicon Valley",
     }
     source = NYTimesSource()
@@ -265,7 +270,14 @@ if __name__ == "__main__":
     # a simple way to create an object holding attributes.
     source.args = argparse.Namespace(**config)
 
-    for idx, batch in enumerate(source.getDataBatch(10)):
-        print(f"{idx} Batch of {len(batch)} items")
-        for item in batch:
-            print(f"  - {item['_id']} - {item['headline.main']}")
+    source.connect()
+    try:
+        # The loader streams every available result; the demo stops after a
+        # few batches to stay within the API rate limit (5 requests/minute).
+        for idx, batch in enumerate(itertools.islice(source.getDataBatch(10), 3)):
+            print(f"{idx} Batch of {len(batch)} items")
+            for item in batch:
+                print(f"  - {item['_id']} - {item['headline.main']}")
+        print(f"Schema: {source.getSchema()}")
+    finally:
+        source.disconnect()
