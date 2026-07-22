@@ -1,6 +1,9 @@
 import argparse
 import logging
+import time
 from typing import Any
+
+import requests
 
 """
 Skeleton for Squirro Delivery Hiring Coding Challenge
@@ -9,6 +12,11 @@ November 2025
 
 
 log = logging.getLogger(__name__)
+
+API_ENDPOINT = "https://api.nytimes.com/svc/search/v2/articlesearch.json"
+MAX_RETRIES = 5
+RETRY_WAIT_SECONDS = 12.0  # The API allows 5 requests per minute.
+REQUEST_TIMEOUT_SECONDS = 30
 
 
 def flatten_dict(obj: Any, parent_key: str = "", sep: str = ".") -> dict[str, Any]:
@@ -39,17 +47,62 @@ class NYTimesSource(object):
     """
 
     def __init__(self):
-        pass
+        self.session: requests.Session | None = None
 
     def connect(self, inc_column=None, max_inc_value=None):
         """Connect to the source"""
         log.debug("Incremental Column: %r", inc_column)
         log.debug("Incremental Last Value: %r", max_inc_value)
+        self.session = requests.Session()
 
     def disconnect(self):
         """Disconnect from the source."""
-        # Nothing to do
-        pass
+        if self.session is not None:
+            self.session.close()
+            self.session = None
+
+    def _request(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Perform one API call, retrying on rate limits and server errors."""
+        if self.session is None:
+            # Allow usage without an explicit connect() call.
+            self.session = requests.Session()
+        for attempt in range(1, MAX_RETRIES + 1):
+            response = self.session.get(
+                API_ENDPOINT, params=params, timeout=REQUEST_TIMEOUT_SECONDS
+            )
+            if response.status_code in (401, 403):
+                raise RuntimeError(
+                    "NYT API authentication failed (HTTP %s). Set a valid key with Article Search access, e.g. via the NYTIMES_API_KEY environment variable."
+                    % response.status_code
+                )
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt == MAX_RETRIES:
+                    raise RuntimeError(
+                        "NYT API request kept failing with HTTP %s after %d attempts."
+                        % (response.status_code, MAX_RETRIES)
+                    )
+                try:
+                    wait = float(response.headers["Retry-After"])
+                except (KeyError, ValueError):
+                    wait = RETRY_WAIT_SECONDS
+                log.warning(
+                    "HTTP %s from NYT API, retrying in %.0fs (attempt %d/%d)",
+                    response.status_code,
+                    wait,
+                    attempt,
+                    MAX_RETRIES,
+                )
+                time.sleep(wait)
+                continue
+            if not response.ok:
+                # Build the error ourselves so the api-key never leaks into
+                # logs as part of the requested URL.
+                raise RuntimeError(
+                    "NYT API request failed with HTTP %s: %s"
+                    % (response.status_code, response.text[:200])
+                )
+            return response.json().get("response") or {}
+        raise RuntimeError("NYT API request failed after %d attempts." % MAX_RETRIES)
 
     def getDataBatch(self, batch_size):
         """
