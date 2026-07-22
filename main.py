@@ -1,3 +1,18 @@
+"""NY Times Article Search data loader.
+
+Implements :class:`NYTimesSource`, a data loader plugin that streams articles
+from the NY Times Article Search API in batches. Nested API documents are
+flattened into single-level dictionaries with dotted keys (e.g.
+"headline.main"), and incremental loading via ``pub_date`` ensures repeated
+runs only return newly published articles. Rate limits and transient server
+errors are retried automatically.
+
+Run as a script for a short demo (requires the ``NYTIMES_API_KEY``
+environment variable):
+
+    python main.py
+"""
+
 import argparse
 import itertools
 import logging
@@ -8,11 +23,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 import requests
-
-"""
-Skeleton for Squirro Delivery Hiring Coding Challenge
-November 2025
-"""
 
 
 log = logging.getLogger(__name__)
