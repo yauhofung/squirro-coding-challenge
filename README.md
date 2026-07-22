@@ -84,9 +84,21 @@ The demo searches for “Silicon Valley”, prints three batches of 10 articles
   Naive timestamps are interpreted as UTC.
 - The incremental cut-off is exclusive: documents with
   `pub_date == max_inc_value` are considered already loaded.
+- The incremental early-stop trusts the API's `sort=newest` ordering: paging
+  stops at the first document published at or before `max_inc_value`, so
+  results are assumed to arrive strictly newest-first.
+- `begin_date` narrows incremental queries only to the day, so same-day older
+  articles are re-fetched and filtered out client-side; the exact cut-off is
+  always applied in code.
+- Documents with a missing or unparseable `pub_date` are yielded rather than
+  dropped — they cannot be compared against the cut-off — and never advance
+  the incremental checkpoint.
 - The demo in `__main__` stops after 3 batches to stay inside the
   5 requests/minute rate limit; the loader itself streams all available
   results (the API serves at most ~1,000 per query).
+- Articles published while paging shift `sort=newest` results down, so a
+  document can occasionally repeat across page boundaries; the loader does
+  not de-duplicate by `_id` and leaves that to the downstream consumer.
 - The flattened schema varies per document (e.g. number of keywords), which
   is why the dynamic schema is the union of keys across observed documents.
 
