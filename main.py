@@ -2,6 +2,7 @@ import argparse
 import logging
 import time
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -54,11 +55,30 @@ class NYTimesSource(object):
 
     def __init__(self):
         self.session: requests.Session | None = None
+        self.inc_column: str | None = None
+        self.max_inc_value: str | None = None
 
-    def connect(self, inc_column=None, max_inc_value=None):
-        """Connect to the source"""
+    def connect(
+        self,
+        inc_column: str | None = None,
+        max_inc_value: str | None = None,
+    ) -> None:
+        """Connect to the source.
+
+        :param inc_column: Column used for incremental loading. Only
+            "pub_date" is supported for the Article Search API.
+        :param max_inc_value: Highest ``inc_column`` value already loaded;
+            only documents published after it are returned.
+        """
         log.debug("Incremental Column: %r", inc_column)
         log.debug("Incremental Last Value: %r", max_inc_value)
+        if inc_column and inc_column != "pub_date":
+            raise ValueError(
+                "Only 'pub_date' is supported as incremental column, got %r"
+                % inc_column
+            )
+        self.inc_column = inc_column
+        self.max_inc_value = max_inc_value
         self.session = requests.Session()
 
     def disconnect(self):
@@ -66,6 +86,24 @@ class NYTimesSource(object):
         if self.session is not None:
             self.session.close()
             self.session = None
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime | None:
+        """Parse an ISO-8601 timestamp such as NYT's "2026-07-21T12:34:56+0000"."""
+        if value in (None, ""):
+            return None
+        text = str(value).strip().replace("Z", "+00:00")
+        # Normalize "+0000" style offsets (no colon) for older Pythons.
+        if len(text) >= 5 and text[-5] in "+-" and text[-4:].isdigit():
+            text = f"{text[:-2]}:{text[-2:]}"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            log.warning("Could not parse timestamp %r", value)
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     def _request(self, params: dict[str, Any]) -> dict[str, Any]:
         """Perform one API call, retrying on rate limits and server errors."""
@@ -110,22 +148,40 @@ class NYTimesSource(object):
             return response.json().get("response") or {}
         raise RuntimeError("NYT API request failed after %d attempts." % MAX_RETRIES)
 
-    def _fetch_page(self, page: int) -> dict[str, Any]:
+    def _fetch_page(
+        self, page: int, begin_date: str | None = None
+    ) -> dict[str, Any]:
         """Fetch one page of Article Search results (10 docs per page)."""
         params = {
             "q": self.args.query,
             "api-key": self.args.api_key,
             "page": page,
+            # Stable newest-first order enables the incremental cut-off.
+            "sort": "newest",
         }
+        if begin_date:
+            # Server-side narrowing for incremental runs; begin_date only has
+            # day granularity, the exact cut-off is applied in _iter_docs().
+            params["begin_date"] = begin_date
         log.debug("Fetching page %d", page)
         return self._request(params)
 
     def _iter_docs(self) -> Iterator[dict[str, Any]]:
         """Yield raw article documents, transparently paging through the API."""
+        since = (
+            self._parse_datetime(self.max_inc_value) if self.inc_column else None
+        )
+        begin_date = since.strftime("%Y%m%d") if since is not None else None
         for page in range(MAX_PAGE + 1):
-            response = self._fetch_page(page)
+            response = self._fetch_page(page, begin_date)
             docs = response.get("docs") or []
             for doc in docs:
+                if since is not None:
+                    pub_date = self._parse_datetime(doc.get("pub_date"))
+                    if pub_date is not None and pub_date <= since:
+                        # Results are sorted newest-first, so everything from
+                        # here on was already loaded in a previous run.
+                        return
                 yield doc
             if len(docs) < PAGE_SIZE:
                 break
@@ -133,6 +189,15 @@ class NYTimesSource(object):
             hits = meta.get("hits")
             if isinstance(hits, int) and (page + 1) * PAGE_SIZE >= hits:
                 break
+
+    def _update_checkpoint(self, pub_date: Any) -> None:
+        """Remember the newest pub_date seen, to resume incremental loads."""
+        if not pub_date:
+            return
+        new = self._parse_datetime(pub_date)
+        current = self._parse_datetime(self.max_inc_value)
+        if new is not None and (current is None or new > current):
+            self.max_inc_value = pub_date
 
     def getDataBatch(self, batch_size: int) -> Iterator[list[dict[str, Any]]]:
         """
@@ -146,6 +211,7 @@ class NYTimesSource(object):
         batch: list[dict[str, Any]] = []
         for doc in self._iter_docs():
             flat = flatten_dict(doc)
+            self._update_checkpoint(flat.get("pub_date"))
             batch.append(flat)
             if len(batch) == batch_size:
                 yield batch
