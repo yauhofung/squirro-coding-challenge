@@ -1,6 +1,7 @@
 import argparse
 import logging
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import requests
@@ -14,6 +15,8 @@ November 2025
 log = logging.getLogger(__name__)
 
 API_ENDPOINT = "https://api.nytimes.com/svc/search/v2/articlesearch.json"
+PAGE_SIZE = 10  # The Article Search API always returns 10 docs per page.
+MAX_PAGE = 100  # The API rejects page values above 100 (~1,000 results max).
 MAX_RETRIES = 5
 RETRY_WAIT_SECONDS = 12.0  # The API allows 5 requests per minute.
 REQUEST_TIMEOUT_SECONDS = 30
@@ -45,6 +48,9 @@ class NYTimesSource(object):
     """
     A data loader plugin for the NY Times API.
     """
+
+    # Populated externally with the loader configuration (see __main__).
+    args: argparse.Namespace
 
     def __init__(self):
         self.session: requests.Session | None = None
@@ -104,20 +110,48 @@ class NYTimesSource(object):
             return response.json().get("response") or {}
         raise RuntimeError("NYT API request failed after %d attempts." % MAX_RETRIES)
 
-    def getDataBatch(self, batch_size):
+    def _fetch_page(self, page: int) -> dict[str, Any]:
+        """Fetch one page of Article Search results (10 docs per page)."""
+        params = {
+            "q": self.args.query,
+            "api-key": self.args.api_key,
+            "page": page,
+        }
+        log.debug("Fetching page %d", page)
+        return self._request(params)
+
+    def _iter_docs(self) -> Iterator[dict[str, Any]]:
+        """Yield raw article documents, transparently paging through the API."""
+        for page in range(MAX_PAGE + 1):
+            response = self._fetch_page(page)
+            docs = response.get("docs") or []
+            for doc in docs:
+                yield doc
+            if len(docs) < PAGE_SIZE:
+                break
+            meta = response.get("meta") or {}
+            hits = meta.get("hits")
+            if isinstance(hits, int) and (page + 1) * PAGE_SIZE >= hits:
+                break
+
+    def getDataBatch(self, batch_size: int) -> Iterator[list[dict[str, Any]]]:
         """
         Generator - Get data from source on batches.
 
         :returns One list for each batch. Each of those is a list of
                  dictionaries with the defined rows.
         """
-        # TODO: implement - this dummy implementation returns one batch of data
-        yield [
-            {
-                "headline.main": "The main headline",
-                "_id": "1234",
-            }
-        ]
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1, got %r" % batch_size)
+        batch: list[dict[str, Any]] = []
+        for doc in self._iter_docs():
+            flat = flatten_dict(doc)
+            batch.append(flat)
+            if len(batch) == batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
 
     def getSchema(self):
         """
