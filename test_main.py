@@ -156,9 +156,7 @@ class TestFlattenDict:
         }
 
     def test_lists_of_dicts(self):
-        flat = flatten_dict(
-            {"keywords": [{"value": "Tech"}, {"value": "Politics"}]}
-        )
+        flat = flatten_dict({"keywords": [{"value": "Tech"}, {"value": "Politics"}]})
         assert flat == {
             "keywords.0.value": "Tech",
             "keywords.1.value": "Politics",
@@ -311,9 +309,7 @@ class TestRequest:
         source.connect()
         assert source._request({"page": 0}) == {"docs": [1, 2]}
 
-    @pytest.mark.parametrize(
-        "payload", [{}, {"status": "OK"}, {"response": None}]
-    )
+    @pytest.mark.parametrize("payload", [{}, {"status": "OK"}, {"response": None}])
     def test_missing_or_null_response_key_yields_empty_dict(
         self, source, fake_api, payload
     ):
@@ -351,9 +347,7 @@ class TestRequest:
         source._request({"page": 0})
         assert sleeps == [main.RETRY_WAIT_SECONDS]
 
-    def test_invalid_retry_after_falls_back_to_default(
-        self, source, fake_api, sleeps
-    ):
+    def test_invalid_retry_after_falls_back_to_default(self, source, fake_api, sleeps):
         fake_api(
             FakeResponse(status_code=429, headers={"Retry-After": "soon"}),
             page_response([]),
@@ -473,9 +467,7 @@ class TestIterDocs:
         # Every page is full and hits claims more, but the API rejects
         # page > MAX_PAGE, so paging must stop after MAX_PAGE + 1 pages.
         pages = [
-            page_response(
-                [make_doc(page * 10 + i) for i in range(10)], hits=99999
-            )
+            page_response([make_doc(page * 10 + i) for i in range(10)], hits=99999)
             for page in range(main.MAX_PAGE + 1)
         ]
         fake = fake_api(*pages)
@@ -501,9 +493,7 @@ class TestIterDocs:
 
     def test_incremental_run_sends_begin_date(self, source, fake_api):
         fake = fake_api(page_response([]))
-        source.connect(
-            inc_column="pub_date", max_inc_value="2026-07-20T15:30:00+0000"
-        )
+        source.connect(inc_column="pub_date", max_inc_value="2026-07-20T15:30:00+0000")
         list(source._iter_docs())
         assert fake.calls[0]["params"]["begin_date"] == "20260720"
 
@@ -522,9 +512,7 @@ class TestIterDocs:
         # The cut-off ends iteration: no second page is requested.
         assert len(fake.calls) == 1
 
-    def test_incremental_yields_docs_with_unparseable_pub_date(
-        self, source, fake_api
-    ):
+    def test_incremental_yields_docs_with_unparseable_pub_date(self, source, fake_api):
         docs = [
             make_doc(0, pub_date=pub_date(0)),
             make_doc(1, pub_date="garbage"),  # can't compare -> keep it
@@ -649,9 +637,7 @@ class TestGetSchema:
         assert len(fake.calls) == calls_before  # derived from seen keys only
 
     def test_schema_is_union_across_documents(self, source, fake_api):
-        fake_api(
-            page_response([make_doc(0), make_doc(1, extra_field="x")])
-        )
+        fake_api(page_response([make_doc(0), make_doc(1, extra_field="x")]))
         source.connect()
         list(source.getDataBatch(10))
         schema = source.getSchema()

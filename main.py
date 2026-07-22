@@ -151,9 +151,7 @@ class NYTimesSource(object):
             return response.json().get("response") or {}
         raise RuntimeError("NYT API request failed after %d attempts." % MAX_RETRIES)
 
-    def _fetch_page(
-        self, page: int, begin_date: str | None = None
-    ) -> dict[str, Any]:
+    def _fetch_page(self, page: int, begin_date: str | None = None) -> dict[str, Any]:
         """Fetch one page of Article Search results (10 docs per page)."""
         params = {
             "q": self.args.query,
@@ -171,9 +169,7 @@ class NYTimesSource(object):
 
     def _iter_docs(self) -> Iterator[dict[str, Any]]:
         """Yield raw article documents, transparently paging through the API."""
-        since = (
-            self._parse_datetime(self.max_inc_value) if self.inc_column else None
-        )
+        since = self._parse_datetime(self.max_inc_value) if self.inc_column else None
         begin_date = since.strftime("%Y%m%d") if since is not None else None
         for page in range(MAX_PAGE + 1):
             response = self._fetch_page(page, begin_date)
