@@ -33,10 +33,15 @@ above — it pins Python/uv, creates the virtualenv, installs dependencies
 with [uv](https://docs.astral.sh/uv/), and auto-loads `.env`:
 
 ```bash
-mise trust && mise install   # once: install pinned Python + uv
-mise run run                 # install deps (via uv) and run the demo
-mise run update              # upgrade deps to newest allowed versions
+mise trust
+MISE_PYTHON_PRECOMPILED_FLAVOR=install_only mise install   # once
+mise run run     # install deps (via uv) and run the demo
+mise run update  # upgrade deps to newest allowed versions
 ```
+
+The flavor override works around mise (as of 2026.3.1) picking a broken
+free-threaded "stripped" build for Python 3.13+; it is harmless once that
+is fixed upstream.
 
 ## Run
 
