@@ -7,46 +7,34 @@ and yields them in batches as flattened Python dictionaries
 
 ## Setup
 
+The project is managed with [mise](https://mise.jdx.dev/): `mise.toml` pins
+Python/uv, creates the virtualenv, installs dependencies with
+[uv](https://docs.astral.sh/uv/), and auto-loads `.env`.
+
 1. Get a free API key at [developer.nytimes.com](https://developer.nytimes.com/):
    create an account, register an app, and enable the **Article Search API**.
-2. Install the dependency (a virtualenv is recommended):
+2. [Install mise](https://mise.jdx.dev/getting-started.html), then set up the
+   toolchain (once):
 
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
+   mise trust
+   MISE_PYTHON_PRECOMPILED_FLAVOR=install_only mise install
    ```
 
-3. Provide the API key via the environment (never hardcoded):
+   The flavor override works around mise (as of 2026.3.1) picking a broken
+   free-threaded "stripped" build for Python 3.13+; it is harmless once that
+   is fixed upstream.
 
-   ```bash
-   export NYTIMES_API_KEY="your-key-here"
-   ```
-
-   Alternatively put `NYTIMES_API_KEY=your-key-here` into a `.env` file
-   (already gitignored) and source it: `set -a; . ./.env; set +a`.
-
-### With mise (alternative)
-
-If you use [mise](https://mise.jdx.dev/), `mise.toml` handles all of the
-above — it pins Python/uv, creates the virtualenv, installs dependencies
-with [uv](https://docs.astral.sh/uv/), and auto-loads `.env`:
-
-```bash
-mise trust
-MISE_PYTHON_PRECOMPILED_FLAVOR=install_only mise install   # once
-mise run run     # install deps (via uv) and run the demo
-mise run update  # upgrade deps to newest allowed versions
-```
-
-The flavor override works around mise (as of 2026.3.1) picking a broken
-free-threaded "stripped" build for Python 3.13+; it is harmless once that
-is fixed upstream.
+3. Provide the API key via the environment (never hardcoded): put
+   `NYTIMES_API_KEY=your-key-here` into a `.env` file (already gitignored) —
+   mise loads it automatically. Exporting `NYTIMES_API_KEY` in your shell
+   works too.
 
 ## Run
 
 ```bash
-python3 main.py
+mise run run     # install deps (via uv) and run the demo
+mise run update  # upgrade deps to newest allowed versions
 ```
 
 The demo searches for “Silicon Valley”, prints three batches of 10 articles
