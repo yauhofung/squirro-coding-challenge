@@ -440,6 +440,15 @@ class TestFetchPage:
         source.connect()
         source._fetch_page(0)
         assert "begin_date" not in fake.calls[0]["params"]
+        assert "end_date" not in fake.calls[0]["params"]
+
+    def test_end_date_is_sent_when_windowing(self, source, fake_api):
+        fake = fake_api(page_response([]))
+        source.connect()
+        source._fetch_page(0, begin_date="20260701", end_date="20260710")
+        params = fake.calls[0]["params"]
+        assert params["begin_date"] == "20260701"
+        assert params["end_date"] == "20260710"
 
 
 # ---------------------------------------------------------------------------
@@ -476,18 +485,72 @@ class TestIterDocs:
         assert len(list(source._iter_docs())) == 20
         assert len(fake.calls) == 2
 
-    def test_stops_at_the_api_page_cap(self, source, fake_api):
-        # Every page is full and hits claims more, but the API rejects
-        # page > MAX_PAGE, so paging must stop after MAX_PAGE + 1 pages.
-        pages = [
+    def test_continues_past_the_page_cap_with_date_windows(self, source, fake_api):
+        # Every page of the first window is full and hits claims more; the
+        # API rejects page > MAX_PAGE, so the loader must continue in a
+        # second window bounded by end_date (the oldest day seen) and
+        # de-duplicate the boundary-day overlap.
+        cap_pages = [
             page_response([make_doc(page * 10 + i) for i in range(10)], hits=99999)
             for page in range(main.MAX_PAGE + 1)
         ]
-        fake = fake_api(*pages)
+        # The second window re-serves two boundary-day docs, then older ones.
+        second_window = page_response(
+            [make_doc(1008), make_doc(1009)] + [make_doc(1010 + i) for i in range(6)]
+        )
+        fake = fake_api(*cap_pages, second_window)
         source.connect()
-        docs = list(source._iter_docs())
-        assert len(docs) == (main.MAX_PAGE + 1) * main.PAGE_SIZE
-        assert len(fake.calls) == main.MAX_PAGE + 1
+        ids = [d["_id"] for d in source._iter_docs()]
+        assert len(ids) == len(set(ids))  # window overlap de-duplicated
+        assert len(ids) == (main.MAX_PAGE + 1) * main.PAGE_SIZE + 6
+        assert ids[-1] == "nyt://article/1015"
+        assert len(fake.calls) == main.MAX_PAGE + 2
+        window_call = fake.calls[main.MAX_PAGE + 1]
+        assert window_call["params"]["page"] == 0
+        # Oldest doc of window one is make_doc(1009): 1009 minutes before
+        # 2026-07-21T12:00Z, i.e. on 2026-07-20.
+        assert window_call["params"]["end_date"] == "20260720"
+
+    def test_windowing_preserves_begin_date_and_the_cutoff(
+        self, source, fake_api, monkeypatch
+    ):
+        monkeypatch.setattr(main, "MAX_PAGE", 0)  # one page per window
+        cutoff = pub_date(10000)  # ~7 days before base -> begin_date 20260714
+        window1 = page_response([make_doc(i) for i in range(10)], hits=100)
+        window2 = page_response(
+            [make_doc(9)]  # boundary-day repeat -> de-duplicated
+            + [make_doc(10 + i) for i in range(5)]  # new, still after cutoff
+            + [make_doc(9999, pub_date=pub_date(10500))]  # older -> stop
+        )
+        fake = fake_api(window1, window2)
+        source.connect(inc_column="pub_date", max_inc_value=cutoff)
+        ids = [d["_id"] for d in source._iter_docs()]
+        assert ids == [f"nyt://article/{i}" for i in range(15)]
+        assert len(fake.calls) == 2
+        first, second = (c["params"] for c in fake.calls)
+        assert first["begin_date"] == "20260714"
+        assert "end_date" not in first
+        assert second["begin_date"] == "20260714"
+        assert second["end_date"] == "20260721"
+
+    def test_warns_and_stops_when_a_single_day_exceeds_the_cap(
+        self, source, fake_api, caplog, monkeypatch
+    ):
+        # end_date only has day granularity: if a whole window's worth of
+        # results shares one day, the next window cannot advance.
+        monkeypatch.setattr(main, "MAX_PAGE", 0)
+        window1 = page_response([make_doc(i) for i in range(10)], hits=99999)
+        window2 = page_response(
+            [make_doc(100 + i, pub_date=pub_date(30 + i)) for i in range(10)],
+            hits=99999,
+        )
+        fake = fake_api(window1, window2)
+        source.connect()
+        with caplog.at_level(logging.WARNING):
+            docs = list(source._iter_docs())
+        assert len(docs) == 20
+        assert len(fake.calls) == 2  # no third, identical window is requested
+        assert "cannot be reached" in caplog.text
 
     def test_repeated_documents_across_pages_are_deduplicated(self, source, fake_api):
         # A newly published article shifts sort=newest results down, so a

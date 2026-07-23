@@ -184,7 +184,12 @@ class NYTimesSource(object):
             return response.json().get("response") or {}
         raise RuntimeError("NYT API request failed after %d attempts." % MAX_RETRIES)
 
-    def _fetch_page(self, page: int, begin_date: str | None = None) -> dict[str, Any]:
+    def _fetch_page(
+        self,
+        page: int,
+        begin_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
         """Fetch one page of Article Search results (10 docs per page)."""
         params = {
             "q": self.args.query,
@@ -197,7 +202,12 @@ class NYTimesSource(object):
             # Server-side narrowing for incremental runs; begin_date only has
             # day granularity, the exact cut-off is applied in _iter_docs().
             params["begin_date"] = begin_date
-        log.debug("Fetching page %d", page)
+        if end_date:
+            # Day-granular upper bound used to continue past the page cap.
+            params["end_date"] = end_date
+        log.debug(
+            "Fetching page %d (begin_date=%s, end_date=%s)", page, begin_date, end_date
+        )
         return self._request(params)
 
     def _iter_docs(self) -> Iterator[dict[str, Any]]:
@@ -207,35 +217,58 @@ class NYTimesSource(object):
         first document *strictly older* than the checkpoint; documents
         published exactly at the checkpoint are yielded again so same-second
         articles are never lost. Documents are de-duplicated by ``_id``
-        within the run.
+        within the run, and when a query has more results than the API's
+        page cap can serve, iteration continues in successively older
+        ``end_date`` windows until the results are exhausted.
         """
         since = self._parse_datetime(self.max_inc_value) if self.inc_column else None
         begin_date = since.strftime("%Y%m%d") if since is not None else None
         seen_ids: set[str] = set()
-        for page in range(MAX_PAGE + 1):
-            response = self._fetch_page(page, begin_date)
-            docs = response.get("docs") or []
-            for doc in docs:
-                if since is not None:
+        end_date: str | None = None
+        while True:
+            oldest: datetime | None = None
+            for page in range(MAX_PAGE + 1):
+                response = self._fetch_page(page, begin_date, end_date)
+                docs = response.get("docs") or []
+                for doc in docs:
                     pub_date = self._parse_datetime(doc.get("pub_date"))
-                    if pub_date is not None and pub_date < since:
+                    if pub_date is not None and (oldest is None or pub_date < oldest):
+                        oldest = pub_date
+                    if since is not None and pub_date is not None and pub_date < since:
                         # Results are sorted newest-first, so everything from
                         # here on was already loaded in a previous run.
                         return
-                doc_id = doc.get("_id")
-                if doc_id is not None:
-                    if doc_id in seen_ids:
-                        # Repeat caused by results shifting mid-run - already
-                        # yielded once.
-                        continue
-                    seen_ids.add(doc_id)
-                yield doc
-            if len(docs) < PAGE_SIZE:
-                break
-            meta = response.get("meta") or {}
-            hits = meta.get("hits")
-            if isinstance(hits, int) and (page + 1) * PAGE_SIZE >= hits:
-                break
+                    doc_id = doc.get("_id")
+                    if doc_id is not None:
+                        if doc_id in seen_ids:
+                            # Repeat caused by results shifting mid-run or by
+                            # date-window overlap - already yielded once.
+                            continue
+                        seen_ids.add(doc_id)
+                    yield doc
+                if len(docs) < PAGE_SIZE:
+                    return
+                meta = response.get("meta") or {}
+                hits = meta.get("hits")
+                if isinstance(hits, int) and (page + 1) * PAGE_SIZE >= hits:
+                    return
+            # The page cap was reached with results still remaining: continue
+            # in an older window, bounded by the oldest publication day seen.
+            if oldest is None:
+                log.warning(
+                    "Page cap reached but no parseable pub_date seen; cannot window further, stopping with results remaining."
+                )
+                return
+            next_end = oldest.strftime("%Y%m%d")
+            if end_date is not None and next_end >= end_date:
+                # end_date only has day granularity: a single day holding
+                # more results than the page cap cannot be windowed past.
+                log.warning(
+                    "More results than the API page cap within %s; older matching articles cannot be reached.",
+                    next_end,
+                )
+                return
+            end_date = next_end
 
     def _update_checkpoint(self, pub_date: Any) -> None:
         """Track the newest pub_date seen by the current run.

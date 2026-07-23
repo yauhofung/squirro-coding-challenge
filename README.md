@@ -57,11 +57,14 @@ schema derivation, including an end-to-end incremental re-run.
 - **`getDataBatch(batch_size)`** is a generator that transparently pages
   through the API (10 docs per page) and re-chunks the stream into batches of
   the requested size, so `batch_size` is independent of the API page size.
-  Pagination stops when a page comes back short/empty, when `meta.hits` is
-  exhausted, or at the API's page cap (100).
+  Pagination stops when a page comes back short/empty or when `meta.hits` is
+  exhausted. When a query has more results than the API's page cap (100
+  pages, ~1,000 results) can serve, the loader keeps going in successively
+  older date windows (`end_date` = oldest publication day seen), so large
+  result sets and big incremental catch-ups are not silently truncated.
 - **De-duplication:** documents are de-duplicated by `_id` within a run, so
-  results shifting across pages (new articles being published while paging)
-  do not produce repeats.
+  neither results shifting across pages (new articles being published while
+  paging) nor the overlap between date windows produces repeats.
 - **`flatten_dict()`** is a hand-written recursive flattener (no third-party
   library, per the challenge). Nested dicts use dot notation
   (`headline.main`), list elements keep their index (`keywords.0.value`) so
@@ -115,17 +118,23 @@ schema derivation, including an end-to-end incremental re-run.
 - The incremental early-stop trusts the API's `sort=newest` ordering: paging
   stops at the first document published strictly before `max_inc_value`, so
   results are assumed to arrive newest-first.
-- `begin_date` narrows incremental queries only to the day, so same-day older
-  articles are re-fetched and filtered out client-side; the exact cut-off is
-  always applied in code.
+- `begin_date`/`end_date` narrow queries only to the day, so boundary-day
+  articles are re-fetched and handled client-side; the exact cut-off and the
+  `_id` de-duplication are always applied in code.
 - Documents with a missing or unparseable `pub_date` are yielded rather than
   dropped — they cannot be compared against the cut-off — and never advance
   the incremental checkpoint.
 - The incremental checkpoint is committed only when a `getDataBatch()` run is
   consumed to completion; interrupted or failed runs leave it untouched.
+- Result sets larger than the API's ~1,000-result page cap are continued in
+  older date windows. The one remaining unreachable case is more than ~1,000
+  matching articles published on a _single day_ (impossible for NYT's real
+  volume, and `end_date` has only day granularity); the loader logs a warning
+  if it ever happens. Very large catch-ups are still subject to the API's
+  500 requests/day quota.
 - The demo in `__main__` stops after 3 batches to stay inside the
   5 requests/minute rate limit; the loader itself streams all available
-  results (the API serves at most ~1,000 per query).
+  results.
 - The flattened schema varies per document (e.g. number of keywords), which
   is why the dynamic schema is the union of keys across observed documents.
 
