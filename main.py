@@ -4,8 +4,13 @@ Implements :class:`NYTimesSource`, a data loader plugin that streams articles
 from the NY Times Article Search API in batches. Nested API documents are
 flattened into single-level dictionaries with dotted keys (e.g.
 "headline.main"), and incremental loading via ``pub_date`` ensures repeated
-runs only return newly published articles. Rate limits and transient server
-errors are retried automatically.
+runs only return newly published articles.
+
+Delivery is at-least-once: the incremental checkpoint only advances once a
+run has been fully consumed, documents are de-duplicated by ``_id`` within a
+run, and queries with more results than the API's page cap (~1,000) are
+continued in successively older date windows. Rate limits, server errors,
+network failures and malformed response bodies are retried automatically.
 
 Run as a script for a short demo (requires the ``NYTIMES_API_KEY``
 environment variable):

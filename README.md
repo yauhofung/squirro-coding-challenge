@@ -47,10 +47,13 @@ mise run test    # install dev deps (pytest) and run the suite
 ```
 
 The suite in `test_main.py` runs fully offline — `requests.Session` is
-replaced with a fake that replays canned API responses — and covers the
-flattener, timestamp parsing, retry/rate-limit handling, pagination (short
-page / `meta.hits` / page-cap stops), batching, incremental loading, and
-schema derivation, including an end-to-end incremental re-run.
+replaced with a fake that replays canned API responses (or raises canned
+network errors) — and covers the flattener (including key collisions),
+timestamp parsing, retry handling (rate limits, server and network errors,
+malformed bodies), pagination (short page / `meta.hits` / date-windowed
+continuation past the page cap), de-duplication, batching, incremental
+loading with checkpoint-commit semantics, and schema derivation, including
+an end-to-end incremental re-run.
 
 ## How it works
 
