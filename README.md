@@ -63,7 +63,10 @@ schema derivation, including an end-to-end incremental re-run.
   library, per the challenge). Nested dicts use dot notation
   (`headline.main`), list elements keep their index (`keywords.0.value`) so
   _all_ elements of each document are preserved, and empty dicts/lists are
-  kept as values so no key silently disappears.
+  kept as values so no key silently disappears. In the (for NYT documents
+  purely theoretical) case where two source paths flatten to the same key,
+  the later value is kept under a `__2`-style suffix and a warning is logged
+  instead of silently overwriting data.
 - **Rate limiting:** the API allows 5 requests/minute and 500/day. On
   HTTP 429 (or 5xx) the loader waits — honouring `Retry-After` when present,
   12 s otherwise — and retries up to 5 times before giving up.

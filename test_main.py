@@ -220,6 +220,19 @@ class TestFlattenDict:
             1,
         }
 
+    def test_key_collisions_are_preserved_with_suffix(self, caplog):
+        # A literal "a.b" key colliding with nested {"a": {"b": ...}} must
+        # not silently overwrite either value.
+        with caplog.at_level(logging.WARNING):
+            flat = flatten_dict({"a": {"b": 1}, "a.b": 2})
+        assert flat == {"a.b": 1, "a.b__2": 2}
+        assert "collision" in caplog.text
+
+    def test_repeated_collisions_get_distinct_suffixes(self):
+        # Even a key colliding with an already-suffixed key stays lossless.
+        flat = flatten_dict({"a": {"b": 1}, "a.b": 2, "a.b__2": 3})
+        assert flat == {"a.b": 1, "a.b__2": 2, "a.b__2__2": 3}
+
 
 # ---------------------------------------------------------------------------
 # NYTimesSource._parse_datetime

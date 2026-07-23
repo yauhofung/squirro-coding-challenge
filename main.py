@@ -24,7 +24,6 @@ from typing import Any
 
 import requests
 
-
 log = logging.getLogger(__name__)
 
 API_ENDPOINT = "https://api.nytimes.com/svc/search/v2/articlesearch.json"
@@ -41,20 +40,38 @@ def flatten_dict(obj: Any, parent_key: str = "", sep: str = ".") -> dict[str, An
     Nested dictionary keys are joined with ``sep`` ("headline.main"), list
     elements are addressed by their index ("keywords.0.value") so that every
     element of the original document is preserved. Empty dicts/lists are kept
-    as plain values so their keys don't disappear.
+    as plain values so their keys don't disappear. Distinct source paths that
+    flatten to the same key (e.g. a literal "a.b" key next to
+    ``{"a": {"b": ...}}``) are kept under a "__2"-style suffix instead of
+    silently overwriting one another.
     """
-    items: dict[str, Any] = {}
+    flat: dict[str, Any] = {}
+    _flatten_into(obj, parent_key, sep, flat)
+    return flat
+
+
+def _flatten_into(obj: Any, key: str, sep: str, out: dict[str, Any]) -> None:
+    """Recursive helper for :func:`flatten_dict`, accumulating into ``out``."""
     if isinstance(obj, dict) and obj:
-        for key, value in obj.items():
-            new_key = f"{parent_key}{sep}{key}" if parent_key else str(key)
-            items.update(flatten_dict(value, new_key, sep))
+        for child_key, value in obj.items():
+            _flatten_into(
+                value, f"{key}{sep}{child_key}" if key else str(child_key), sep, out
+            )
     elif isinstance(obj, list) and obj:
         for index, value in enumerate(obj):
-            new_key = f"{parent_key}{sep}{index}" if parent_key else str(index)
-            items.update(flatten_dict(value, new_key, sep))
+            _flatten_into(value, f"{key}{sep}{index}" if key else str(index), sep, out)
     else:
-        items[parent_key] = obj
-    return items
+        if key in out:
+            suffix = 2
+            while f"{key}__{suffix}" in out:
+                suffix += 1
+            log.warning(
+                "Flattened key collision on %r; keeping the extra value as %r",
+                key,
+                f"{key}__{suffix}",
+            )
+            key = f"{key}__{suffix}"
+        out[key] = obj
 
 
 class NYTimesSource(object):
