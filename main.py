@@ -34,6 +34,27 @@ RETRY_WAIT_SECONDS = 12.0  # The API allows 5 requests per minute.
 MAX_RETRY_WAIT_SECONDS = 120.0  # Cap Retry-After so a bogus header can't stall a run.
 REQUEST_TIMEOUT_SECONDS = 30
 
+# Returned by getSchema() only when nothing has been loaded and the API is
+# unreachable; mirrors the flattened names of the most common NYT fields.
+STATIC_FALLBACK_SCHEMA = [
+    "_id",
+    "abstract",
+    "byline.original",
+    "document_type",
+    "headline.main",
+    "keywords.0.value",
+    "lead_paragraph",
+    "news_desk",
+    "pub_date",
+    "section_name",
+    "snippet",
+    "source",
+    "type_of_material",
+    "uri",
+    "web_url",
+    "word_count",
+]
+
 
 def flatten_dict(obj: Any, parent_key: str = "", sep: str = ".") -> dict[str, Any]:
     """Flatten nested dicts/lists into a single-level dict with dotted keys.
@@ -364,6 +385,11 @@ class NYTimesSource(object):
     def getSchema(self) -> list[str]:
         """
         Return the schema of the dataset
+
+        If no documents have been loaded yet, a single API call is made to
+        derive the schema from a sample page; only if that fails does the
+        static fallback column list apply.
+
         :returns a List containing the names of the columns retrieved from the
         source
         """
@@ -380,18 +406,7 @@ class NYTimesSource(object):
                 )
         if self._seen_keys:
             return sorted(self._seen_keys)
-
-        schema = [
-            "title",
-            "body",
-            "created_at",
-            "id",
-            "summary",
-            "abstract",
-            "keywords",
-        ]
-
-        return schema
+        return list(STATIC_FALLBACK_SCHEMA)
 
 
 if __name__ == "__main__":

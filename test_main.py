@@ -23,13 +23,22 @@ API_KEY = f"dummy-{uuid.uuid4()}"
 UTC = timezone.utc
 
 STATIC_SCHEMA = [
-    "title",
-    "body",
-    "created_at",
-    "id",
-    "summary",
+    "_id",
     "abstract",
-    "keywords",
+    "byline.original",
+    "document_type",
+    "headline.main",
+    "keywords.0.value",
+    "lead_paragraph",
+    "news_desk",
+    "pub_date",
+    "section_name",
+    "snippet",
+    "source",
+    "type_of_material",
+    "uri",
+    "web_url",
+    "word_count",
 ]
 
 

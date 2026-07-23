@@ -139,6 +139,9 @@ schema derivation, including an end-to-end incremental re-run.
 - The demo in `__main__` stops after 3 batches to stay inside the
   5 requests/minute rate limit; the loader itself streams all available
   results.
+- `getSchema()` may make a single API call (one sample page) when no
+  documents have been loaded yet; otherwise it works purely from the keys
+  observed so far.
 - The flattened schema varies per document (e.g. number of keywords), which
   is why the dynamic schema is the union of keys across observed documents.
 
