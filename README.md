@@ -82,9 +82,13 @@ schema derivation, including an end-to-end incremental re-run.
 
   The loader narrows the query server-side with `begin_date`, sorts results
   newest-first, and stops as soon as it reaches an article published at or
-  before `max_inc_value`. While loading, `source.max_inc_value` is advanced
-  to the newest `pub_date` seen, so it can be persisted and passed back on
-  the next run.
+  before `max_inc_value`.
+
+  `source.max_inc_value` is committed only after the run has been fully
+  consumed (the `getDataBatch` generator is exhausted); if a run fails or is
+  abandoned midway, the checkpoint keeps its previous value and the next run
+  re-fetches the missed articles instead of skipping them, and
+  `source.max_inc_value` is always safe to persist for the next run.
 
 - **Dynamic schema:** `getSchema()` returns the sorted union of all flattened
   keys observed while loading; if nothing has been loaded yet it derives the
@@ -108,6 +112,8 @@ schema derivation, including an end-to-end incremental re-run.
 - Documents with a missing or unparseable `pub_date` are yielded rather than
   dropped — they cannot be compared against the cut-off — and never advance
   the incremental checkpoint.
+- The incremental checkpoint is committed only when a `getDataBatch()` run is
+  consumed to completion; interrupted or failed runs leave it untouched.
 - The demo in `__main__` stops after 3 batches to stay inside the
   5 requests/minute rate limit; the loader itself streams all available
   results (the API serves at most ~1,000 per query).

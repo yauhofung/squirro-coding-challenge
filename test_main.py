@@ -548,36 +548,41 @@ class TestIterDocs:
 
 
 class TestUpdateCheckpoint:
-    def test_sets_the_first_value(self, source):
+    # _update_checkpoint() only moves the *candidate* checkpoint;
+    # getDataBatch() commits it to max_inc_value after a completed run
+    # (see TestGetDataBatch for the commit behavior).
+
+    def test_sets_the_first_value_without_committing(self, source):
         source._update_checkpoint(pub_date(0))
-        assert source.max_inc_value == pub_date(0)
+        assert source._candidate_inc_value == pub_date(0)
+        assert source.max_inc_value is None
 
     def test_advances_on_newer_and_keeps_on_older(self, source):
-        source.max_inc_value = pub_date(60)
+        source._candidate_inc_value = pub_date(60)
         source._update_checkpoint(pub_date(0))  # newer
-        assert source.max_inc_value == pub_date(0)
+        assert source._candidate_inc_value == pub_date(0)
         source._update_checkpoint(pub_date(120))  # older
-        assert source.max_inc_value == pub_date(0)
+        assert source._candidate_inc_value == pub_date(0)
 
     def test_equal_value_does_not_replace(self, source):
-        source.max_inc_value = pub_date(0)
+        source._candidate_inc_value = pub_date(0)
         source._update_checkpoint(pub_date(0))
-        assert source.max_inc_value == pub_date(0)
+        assert source._candidate_inc_value == pub_date(0)
 
     @pytest.mark.parametrize("value", [None, "", "garbage"])
     def test_ignores_missing_or_unparseable_values(self, source, value):
-        source.max_inc_value = pub_date(0)
+        source._candidate_inc_value = pub_date(0)
         source._update_checkpoint(value)
-        assert source.max_inc_value == pub_date(0)
+        assert source._candidate_inc_value == pub_date(0)
 
     def test_replaces_an_unparseable_current_value(self, source):
-        source.max_inc_value = "garbage"
+        source._candidate_inc_value = "garbage"
         source._update_checkpoint(pub_date(0))
-        assert source.max_inc_value == pub_date(0)
+        assert source._candidate_inc_value == pub_date(0)
 
     def test_stores_the_raw_string_not_a_datetime(self, source):
         source._update_checkpoint("2026-07-21T12:00:00+0000")
-        assert source.max_inc_value == "2026-07-21T12:00:00+0000"
+        assert source._candidate_inc_value == "2026-07-21T12:00:00+0000"
 
 
 # ---------------------------------------------------------------------------
@@ -632,6 +637,44 @@ class TestGetDataBatch:
         fake_api(page_response([]))
         source.connect()
         assert list(source.getDataBatch(10)) == []
+
+    def test_checkpoint_commits_only_after_full_consumption(self, source, fake_api):
+        fake_api(
+            page_response([make_doc(i) for i in range(10)], hits=20),
+            page_response([make_doc(10 + i) for i in range(10)], hits=20),
+        )
+        source.connect(inc_column="pub_date", max_inc_value=None)
+        gen = source.getDataBatch(10)
+        next(gen)
+        assert source.max_inc_value is None  # mid-run: nothing committed yet
+        next(gen)
+        with pytest.raises(StopIteration):
+            next(gen)
+        assert source.max_inc_value == pub_date(0)
+
+    def test_abandoned_run_does_not_advance_the_checkpoint(self, source, fake_api):
+        # A consumer that persists max_inc_value after aborting mid-stream
+        # must not skip the articles that were never delivered.
+        previous = pub_date(500)
+        fake_api(page_response([make_doc(i) for i in range(10)], hits=20))
+        source.connect(inc_column="pub_date", max_inc_value=previous)
+        gen = source.getDataBatch(10)
+        assert len(next(gen)) == 10
+        gen.close()  # consumer aborts mid-stream
+        assert source.max_inc_value == previous
+
+    def test_failed_run_does_not_advance_the_checkpoint(self, source, fake_api):
+        fake_api(
+            page_response([make_doc(i) for i in range(10)], hits=30),
+            FakeResponse(status_code=400, text="boom"),
+        )
+        source.connect(inc_column="pub_date", max_inc_value=None)
+        gen = source.getDataBatch(5)
+        next(gen)
+        next(gen)
+        with pytest.raises(RuntimeError):
+            next(gen)  # fetching the next page fails
+        assert source.max_inc_value is None
 
 
 # ---------------------------------------------------------------------------

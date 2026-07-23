@@ -86,6 +86,7 @@ class NYTimesSource(object):
         self.session: requests.Session | None = None
         self.inc_column: str | None = None
         self.max_inc_value: str | None = None
+        self._candidate_inc_value: str | None = None
         self._seen_keys: set[str] = set()
 
     def connect(
@@ -98,7 +99,9 @@ class NYTimesSource(object):
         :param inc_column: Column used for incremental loading. Only
             "pub_date" is supported for the Article Search API.
         :param max_inc_value: Highest ``inc_column`` value already loaded;
-            only documents published after it are returned.
+            only documents published after it are returned. The attribute is
+            advanced only after a ``getDataBatch()`` run has been fully
+            consumed, so it is always safe to persist.
         """
         log.debug("Incremental Column: %r", inc_column)
         log.debug("Incremental Last Value: %r", max_inc_value)
@@ -217,23 +220,35 @@ class NYTimesSource(object):
                 break
 
     def _update_checkpoint(self, pub_date: Any) -> None:
-        """Remember the newest pub_date seen, to resume incremental loads."""
+        """Track the newest pub_date seen by the current run.
+
+        Only the candidate checkpoint is advanced here; getDataBatch()
+        promotes it to ``max_inc_value`` once the run has been fully
+        consumed, so an interrupted run never skips undelivered articles.
+        """
         if not pub_date:
             return
         new = self._parse_datetime(pub_date)
-        current = self._parse_datetime(self.max_inc_value)
+        current = self._parse_datetime(self._candidate_inc_value)
         if new is not None and (current is None or new > current):
-            self.max_inc_value = pub_date
+            self._candidate_inc_value = pub_date
 
     def getDataBatch(self, batch_size: int) -> Iterator[list[dict[str, Any]]]:
         """
         Generator - Get data from source on batches.
+
+        The incremental checkpoint (``max_inc_value``) is committed only
+        after the final batch has been delivered: if the run fails or the
+        generator is abandoned midway, the checkpoint keeps its previous
+        value and the next run re-fetches the missed articles instead of
+        skipping them.
 
         :returns One list for each batch. Each of those is a list of
                  dictionaries with the defined rows.
         """
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1, got %r" % batch_size)
+        self._candidate_inc_value = self.max_inc_value
         batch: list[dict[str, Any]] = []
         for doc in self._iter_docs():
             flat = flatten_dict(doc)
@@ -245,6 +260,9 @@ class NYTimesSource(object):
                 batch = []
         if batch:
             yield batch
+        # Every document has been delivered - only now is it safe to commit
+        # the checkpoint for the next incremental run.
+        self.max_inc_value = self._candidate_inc_value
 
     def getSchema(self) -> list[str]:
         """
