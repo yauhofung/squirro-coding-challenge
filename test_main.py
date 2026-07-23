@@ -489,6 +489,27 @@ class TestIterDocs:
         assert len(docs) == (main.MAX_PAGE + 1) * main.PAGE_SIZE
         assert len(fake.calls) == main.MAX_PAGE + 1
 
+    def test_repeated_documents_across_pages_are_deduplicated(self, source, fake_api):
+        # A newly published article shifts sort=newest results down, so a
+        # document can reappear on the next page - it must be yielded once.
+        page0 = [make_doc(i) for i in range(10)]
+        page1 = [make_doc(9), make_doc(10), make_doc(11)]
+        fake_api(page_response(page0, hits=14), page_response(page1, hits=14))
+        source.connect()
+        ids = [d["_id"] for d in source._iter_docs()]
+        assert ids == [f"nyt://article/{i}" for i in range(12)]
+
+    def test_documents_without_id_are_yielded_and_not_deduplicated(
+        self, source, fake_api
+    ):
+        doc_a = make_doc(0)
+        del doc_a["_id"]
+        doc_b = make_doc(1)
+        del doc_b["_id"]
+        fake_api(page_response([doc_a, doc_b]))
+        source.connect()
+        assert list(source._iter_docs()) == [doc_a, doc_b]
+
     @pytest.mark.parametrize("docs", [[], None])
     def test_empty_or_null_docs_yield_nothing(self, source, fake_api, docs):
         fake = fake_api(

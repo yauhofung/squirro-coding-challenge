@@ -59,6 +59,9 @@ schema derivation, including an end-to-end incremental re-run.
   the requested size, so `batch_size` is independent of the API page size.
   Pagination stops when a page comes back short/empty, when `meta.hits` is
   exhausted, or at the API's page cap (100).
+- **De-duplication:** documents are de-duplicated by `_id` within a run, so
+  results shifting across pages (new articles being published while paging)
+  do not produce repeats.
 - **`flatten_dict()`** is a hand-written recursive flattener (no third-party
   library, per the challenge). Nested dicts use dot notation
   (`headline.main`), list elements keep their index (`keywords.0.value`) so
@@ -123,9 +126,6 @@ schema derivation, including an end-to-end incremental re-run.
 - The demo in `__main__` stops after 3 batches to stay inside the
   5 requests/minute rate limit; the loader itself streams all available
   results (the API serves at most ~1,000 per query).
-- Articles published while paging shift `sort=newest` results down, so a
-  document can occasionally repeat across page boundaries; the loader does
-  not de-duplicate by `_id` and leaves that to the downstream consumer.
 - The flattened schema varies per document (e.g. number of keywords), which
   is why the dynamic schema is the union of keys across observed documents.
 

@@ -206,10 +206,12 @@ class NYTimesSource(object):
         Results are requested newest-first. Incremental runs stop at the
         first document *strictly older* than the checkpoint; documents
         published exactly at the checkpoint are yielded again so same-second
-        articles are never lost.
+        articles are never lost. Documents are de-duplicated by ``_id``
+        within the run.
         """
         since = self._parse_datetime(self.max_inc_value) if self.inc_column else None
         begin_date = since.strftime("%Y%m%d") if since is not None else None
+        seen_ids: set[str] = set()
         for page in range(MAX_PAGE + 1):
             response = self._fetch_page(page, begin_date)
             docs = response.get("docs") or []
@@ -220,6 +222,13 @@ class NYTimesSource(object):
                         # Results are sorted newest-first, so everything from
                         # here on was already loaded in a previous run.
                         return
+                doc_id = doc.get("_id")
+                if doc_id is not None:
+                    if doc_id in seen_ids:
+                        # Repeat caused by results shifting mid-run - already
+                        # yielded once.
+                        continue
+                    seen_ids.add(doc_id)
                 yield doc
             if len(docs) < PAGE_SIZE:
                 break
