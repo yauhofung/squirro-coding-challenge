@@ -81,14 +81,18 @@ schema derivation, including an end-to-end incremental re-run.
   ```
 
   The loader narrows the query server-side with `begin_date`, sorts results
-  newest-first, and stops as soon as it reaches an article published at or
-  before `max_inc_value`.
+  newest-first, and stops as soon as it reaches an article published
+  strictly before `max_inc_value`. Articles published exactly at
+  `max_inc_value` are returned again so that a _different_ article from the
+  same second can never be lost — de-duplicate across runs by `_id`
+  downstream (e.g. upsert).
 
   `source.max_inc_value` is committed only after the run has been fully
   consumed (the `getDataBatch` generator is exhausted); if a run fails or is
   abandoned midway, the checkpoint keeps its previous value and the next run
-  re-fetches the missed articles instead of skipping them, and
-  `source.max_inc_value` is always safe to persist for the next run.
+  re-fetches the missed articles instead of skipping them. Delivery is
+  therefore at-least-once, and `source.max_inc_value` is always safe to
+  persist for the next run.
 
 - **Dynamic schema:** `getSchema()` returns the sorted union of all flattened
   keys observed while loading; if nothing has been loaded yet it derives the
@@ -101,11 +105,13 @@ schema derivation, including an end-to-end incremental re-run.
   natural cursor the Article Search API exposes; `connect()` rejects others.
 - `max_inc_value` is an ISO-8601 timestamp (as returned by the API itself).
   Naive timestamps are interpreted as UTC.
-- The incremental cut-off is exclusive: documents with
-  `pub_date == max_inc_value` are considered already loaded.
+- The incremental cut-off is inclusive: documents with
+  `pub_date == max_inc_value` are returned again (at-least-once delivery, so
+  same-second articles are never lost); documents strictly older stop the
+  run. Consumers are expected to de-duplicate across runs by `_id`.
 - The incremental early-stop trusts the API's `sort=newest` ordering: paging
-  stops at the first document published at or before `max_inc_value`, so
-  results are assumed to arrive strictly newest-first.
+  stops at the first document published strictly before `max_inc_value`, so
+  results are assumed to arrive newest-first.
 - `begin_date` narrows incremental queries only to the day, so same-day older
   articles are re-fetched and filtered out client-side; the exact cut-off is
   always applied in code.

@@ -99,7 +99,10 @@ class NYTimesSource(object):
         :param inc_column: Column used for incremental loading. Only
             "pub_date" is supported for the Article Search API.
         :param max_inc_value: Highest ``inc_column`` value already loaded;
-            only documents published after it are returned. The attribute is
+            only documents published at or after it are returned. Documents
+            published exactly at ``max_inc_value`` are returned again so that
+            a different article from the same second is never lost -
+            de-duplicate across runs by ``_id`` downstream. The attribute is
             advanced only after a ``getDataBatch()`` run has been fully
             consumed, so it is always safe to persist.
         """
@@ -198,7 +201,13 @@ class NYTimesSource(object):
         return self._request(params)
 
     def _iter_docs(self) -> Iterator[dict[str, Any]]:
-        """Yield raw article documents, transparently paging through the API."""
+        """Yield raw article documents, transparently paging through the API.
+
+        Results are requested newest-first. Incremental runs stop at the
+        first document *strictly older* than the checkpoint; documents
+        published exactly at the checkpoint are yielded again so same-second
+        articles are never lost.
+        """
         since = self._parse_datetime(self.max_inc_value) if self.inc_column else None
         begin_date = since.strftime("%Y%m%d") if since is not None else None
         for page in range(MAX_PAGE + 1):
@@ -207,7 +216,7 @@ class NYTimesSource(object):
             for doc in docs:
                 if since is not None:
                     pub_date = self._parse_datetime(doc.get("pub_date"))
-                    if pub_date is not None and pub_date <= since:
+                    if pub_date is not None and pub_date < since:
                         # Results are sorted newest-first, so everything from
                         # here on was already loaded in a previous run.
                         return
@@ -241,7 +250,7 @@ class NYTimesSource(object):
         after the final batch has been delivered: if the run fails or the
         generator is abandoned midway, the checkpoint keeps its previous
         value and the next run re-fetches the missed articles instead of
-        skipping them.
+        skipping them (at-least-once delivery).
 
         :returns One list for each batch. Each of those is a list of
                  dictionaries with the defined rows.

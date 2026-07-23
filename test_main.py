@@ -510,18 +510,24 @@ class TestIterDocs:
         list(source._iter_docs())
         assert fake.calls[0]["params"]["begin_date"] == "20260720"
 
-    def test_incremental_stops_at_cutoff_mid_page(self, source, fake_api):
+    def test_incremental_stops_strictly_below_cutoff_mid_page(self, source, fake_api):
         cutoff = pub_date(60)
         docs = [
             make_doc(0, pub_date=pub_date(0)),  # newer -> yielded
             make_doc(1, pub_date=pub_date(30)),  # newer -> yielded
-            make_doc(2, pub_date=cutoff),  # equal -> already loaded, stop
-            make_doc(3, pub_date=pub_date(90)),  # older -> never reached
+            make_doc(2, pub_date=cutoff),  # boundary -> re-yielded on purpose
+            make_doc(3, pub_date=pub_date(90)),  # strictly older -> stop
         ]
         fake = fake_api(page_response(docs, hits=1000))
         source.connect(inc_column="pub_date", max_inc_value=cutoff)
         result = list(source._iter_docs())
-        assert [d["_id"] for d in result] == ["nyt://article/0", "nyt://article/1"]
+        # The boundary document comes back too: a *different* article
+        # published in the same second as the checkpoint must not be lost.
+        assert [d["_id"] for d in result] == [
+            "nyt://article/0",
+            "nyt://article/1",
+            "nyt://article/2",
+        ]
         # The cut-off ends iteration: no second page is requested.
         assert len(fake.calls) == 1
 
@@ -778,9 +784,13 @@ class TestEndToEnd:
         )
         rerun.connect(inc_column="pub_date", max_inc_value=checkpoint)
         second_run = [d for b in rerun.getDataBatch(10) for d in b]
+        # The boundary document (pub_date == checkpoint) is re-yielded on
+        # purpose so a different article published in that same second is
+        # never lost; consumers de-duplicate across runs by _id.
         assert [d["_id"] for d in second_run] == [
             "nyt://article/101",
             "nyt://article/100",
+            "nyt://article/0",
         ]
         assert fake.calls[0]["params"]["begin_date"] == "20260721"
         # The checkpoint advanced to the newest article of the second run.
