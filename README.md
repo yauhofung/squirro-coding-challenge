@@ -73,9 +73,13 @@ schema derivation, including an end-to-end incremental re-run.
   purely theoretical) case where two source paths flatten to the same key,
   the later value is kept under a `__2`-style suffix and a warning is logged
   instead of silently overwriting data.
-- **Rate limiting:** the API allows 5 requests/minute and 500/day. On
-  HTTP 429 (or 5xx) the loader waits — honouring `Retry-After` when present,
-  12 s otherwise — and retries up to 5 times before giving up.
+- **Rate limiting & retries:** the API allows 5 requests/minute and 500/day.
+  On HTTP 429 (or 5xx) the loader waits — honouring `Retry-After` when
+  present (capped at 120 s so a bogus header can't stall a run), 12 s
+  otherwise — and retries up to 5 times before giving up. Network errors and
+  200 responses with malformed JSON bodies are retried the same way; error
+  messages never include the request URL, so the API key cannot leak into
+  logs.
 
 ## Bonus features
 

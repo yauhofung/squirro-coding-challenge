@@ -31,6 +31,7 @@ PAGE_SIZE = 10  # The Article Search API always returns 10 docs per page.
 MAX_PAGE = 100  # The API rejects page values above 100 (~1,000 results max).
 MAX_RETRIES = 5
 RETRY_WAIT_SECONDS = 12.0  # The API allows 5 requests per minute.
+MAX_RETRY_WAIT_SECONDS = 120.0  # Cap Retry-After so a bogus header can't stall a run.
 REQUEST_TIMEOUT_SECONDS = 30
 
 
@@ -142,14 +143,40 @@ class NYTimesSource(object):
         return parsed
 
     def _request(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Perform one API call, retrying on rate limits and server errors."""
+        """Perform one API call, retrying transient failures.
+
+        Retried (up to MAX_RETRIES attempts): HTTP 429 and 5xx - honouring
+        ``Retry-After`` capped at MAX_RETRY_WAIT_SECONDS - network errors,
+        and 200 responses whose body is not a JSON object. Fatal: HTTP
+        401/403 (bad key) and other client errors.
+        """
         if self.session is None:
             # Allow usage without an explicit connect() call.
             self.session = requests.Session()
         for attempt in range(1, MAX_RETRIES + 1):
-            response = self.session.get(
-                API_ENDPOINT, params=params, timeout=REQUEST_TIMEOUT_SECONDS
-            )
+            wait = RETRY_WAIT_SECONDS
+            try:
+                response = self.session.get(
+                    API_ENDPOINT, params=params, timeout=REQUEST_TIMEOUT_SECONDS
+                )
+            except requests.RequestException as exc:
+                if attempt == MAX_RETRIES:
+                    # Only the exception class is reported: requests error
+                    # messages embed the full URL, api-key included, so the
+                    # original exception must not surface (hence "from None").
+                    raise RuntimeError(
+                        "NYT API request kept failing with network errors (%s) after %d attempts."
+                        % (type(exc).__name__, MAX_RETRIES)
+                    ) from None
+                log.warning(
+                    "Network error (%s) talking to the NYT API, retrying in %.0fs (attempt %d/%d)",
+                    type(exc).__name__,
+                    wait,
+                    attempt,
+                    MAX_RETRIES,
+                )
+                time.sleep(wait)
+                continue
             if response.status_code in (401, 403):
                 raise RuntimeError(
                     "NYT API authentication failed (HTTP %s). Set a valid key with Article Search access, e.g. via the NYTIMES_API_KEY environment variable."
@@ -165,6 +192,7 @@ class NYTimesSource(object):
                     wait = float(response.headers["Retry-After"])
                 except (KeyError, ValueError):
                     wait = RETRY_WAIT_SECONDS
+                wait = min(max(wait, 0.0), MAX_RETRY_WAIT_SECONDS)
                 log.warning(
                     "HTTP %s from NYT API, retrying in %.0fs (attempt %d/%d)",
                     response.status_code,
@@ -181,7 +209,25 @@ class NYTimesSource(object):
                     "NYT API request failed with HTTP %s: %s"
                     % (response.status_code, response.text[:200])
                 )
-            return response.json().get("response") or {}
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if not isinstance(payload, dict):
+                if attempt == MAX_RETRIES:
+                    raise RuntimeError(
+                        "NYT API returned a malformed JSON body (HTTP 200) after %d attempts."
+                        % MAX_RETRIES
+                    )
+                log.warning(
+                    "Malformed JSON body from the NYT API, retrying in %.0fs (attempt %d/%d)",
+                    wait,
+                    attempt,
+                    MAX_RETRIES,
+                )
+                time.sleep(wait)
+                continue
+            return payload.get("response") or {}
         raise RuntimeError("NYT API request failed after %d attempts." % MAX_RETRIES)
 
     def _fetch_page(

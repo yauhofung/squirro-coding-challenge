@@ -55,11 +55,23 @@ class FakeResponse:
         return self._payload
 
 
+class BrokenJSONResponse(FakeResponse):
+    """A 200 response whose body is not valid JSON (e.g. an HTML error page)."""
+
+    def __init__(self, text="<html>Bad gateway</html>"):
+        super().__init__(status_code=200, text=text)
+
+    def json(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+
 class FakeSession:
     """Stand-in for requests.Session that replays canned responses in order.
 
-    Raises if the code under test makes more requests than were canned, so
-    tests fail loudly on unexpected extra API calls.
+    Canned entries may also be Exception instances, which are raised instead
+    of returned (to simulate network failures). Raises if the code under test
+    makes more requests than were canned, so tests fail loudly on unexpected
+    extra API calls.
     """
 
     def __init__(self, responses=()):
@@ -74,7 +86,10 @@ class FakeSession:
         )
         if not self.responses:
             raise AssertionError("FakeSession ran out of canned responses")
-        return self.responses.pop(0)
+        item = self.responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
     def close(self):
         self.closed = True
@@ -369,6 +384,25 @@ class TestRequest:
         source._request({"page": 0})
         assert sleeps == [main.RETRY_WAIT_SECONDS]
 
+    def test_excessive_retry_after_is_capped(self, source, fake_api, sleeps):
+        # A bogus Retry-After (e.g. one hour) must not stall the run.
+        fake_api(
+            FakeResponse(status_code=429, headers={"Retry-After": "3600"}),
+            page_response([]),
+        )
+        source.connect()
+        source._request({"page": 0})
+        assert sleeps == [main.MAX_RETRY_WAIT_SECONDS]
+
+    def test_negative_retry_after_is_clamped_to_zero(self, source, fake_api, sleeps):
+        fake_api(
+            FakeResponse(status_code=429, headers={"Retry-After": "-5"}),
+            page_response([]),
+        )
+        source.connect()
+        source._request({"page": 0})
+        assert sleeps == [0.0]
+
     def test_retries_on_server_errors(self, source, fake_api, sleeps):
         fake = fake_api(
             FakeResponse(status_code=500),
@@ -390,6 +424,59 @@ class TestRequest:
         assert "429" in str(exc.value)
         assert len(fake.calls) == main.MAX_RETRIES
         # No sleep after the final attempt.
+        assert len(sleeps) == main.MAX_RETRIES - 1
+
+    def test_retries_on_network_errors(self, source, fake_api, sleeps):
+        fake = fake_api(
+            main.requests.ConnectionError("connection reset"),
+            page_response([make_doc(0)]),
+        )
+        source.connect()
+        result = source._request({"page": 0})
+        assert result["docs"][0]["_id"] == "nyt://article/0"
+        assert len(fake.calls) == 2
+        assert sleeps == [main.RETRY_WAIT_SECONDS]
+
+    def test_persistent_network_errors_give_up_without_leaking_the_key(
+        self, source, fake_api, sleeps
+    ):
+        # requests error messages embed the full request URL - api-key
+        # included - so the raised error must only name the exception class.
+        errors = [
+            main.requests.ConnectionError(
+                f"Max retries exceeded with url: /?api-key={API_KEY}"
+            )
+            for _ in range(main.MAX_RETRIES)
+        ]
+        fake = fake_api(*errors)
+        source.connect()
+        with pytest.raises(RuntimeError, match="network errors") as exc:
+            source._request({"api-key": API_KEY, "page": 0})
+        assert API_KEY not in str(exc.value)
+        assert "ConnectionError" in str(exc.value)
+        assert exc.value.__cause__ is None  # chain suppressed on purpose
+        assert len(fake.calls) == main.MAX_RETRIES
+
+    def test_retries_on_malformed_json_body(self, source, fake_api, sleeps):
+        fake = fake_api(BrokenJSONResponse(), page_response([make_doc(0)]))
+        source.connect()
+        result = source._request({"page": 0})
+        assert result["docs"][0]["_id"] == "nyt://article/0"
+        assert len(fake.calls) == 2
+        assert sleeps == [main.RETRY_WAIT_SECONDS]
+
+    def test_non_dict_json_body_is_treated_as_malformed(self, source, fake_api, sleeps):
+        fake_api(FakeResponse(payload=[1, 2, 3]), page_response([]))
+        source.connect()
+        assert source._request({"page": 0}) == {"docs": [], "meta": {"hits": 0}}
+        assert len(sleeps) == 1
+
+    def test_gives_up_on_persistent_malformed_json(self, source, fake_api, sleeps):
+        fake = fake_api(*[BrokenJSONResponse() for _ in range(main.MAX_RETRIES)])
+        source.connect()
+        with pytest.raises(RuntimeError, match="malformed JSON"):
+            source._request({"page": 0})
+        assert len(fake.calls) == main.MAX_RETRIES
         assert len(sleeps) == main.MAX_RETRIES - 1
 
     def test_client_error_raises_with_truncated_body(self, source, fake_api):
@@ -798,7 +885,7 @@ class TestGetSchema:
         assert len(fake.calls) == 1
         assert fake.calls[0]["params"]["page"] == 0
 
-    def test_static_fallback_when_api_unreachable(self, source, caplog):
+    def test_static_fallback_when_api_unreachable(self, source, sleeps, caplog):
         class ExplodingSession:
             def get(self, *args, **kwargs):
                 raise main.requests.ConnectionError("network down")
@@ -808,6 +895,8 @@ class TestGetSchema:
             schema = source.getSchema()
         assert schema == STATIC_SCHEMA
         assert "falling back" in caplog.text
+        # The sample fetch went through the retry machinery before giving up.
+        assert len(sleeps) == main.MAX_RETRIES - 1
 
     def test_static_fallback_when_api_returns_no_docs(self, source, fake_api):
         fake_api(page_response([]))
